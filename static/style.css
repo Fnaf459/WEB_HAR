@@ -1,0 +1,136 @@
+body {
+    background-color: black;
+    color: white;
+    font-family: Arial, sans-serif;
+    margin: 0;
+    overflow: auto;
+}
+
+h1 {
+    text-align: center;
+    margin: 10px 0;
+}
+
+#cameras {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 10px;
+    padding: 10px;
+    justify-items: center;
+}
+
+.camera {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin: 10px;
+    box-sizing: border-box;
+}
+
+img {
+    width: 100%;
+    height: auto;
+    object-fit: cover;
+    border: none;
+}
+
+.button-container {
+    display: flex;
+    gap: 10px;
+    margin-top: 5px;
+    margin-bottom: 5px;
+}
+
+form {
+    margin: 0;
+}
+
+button {
+    background-color: black;
+    color: white;
+    border: 1px solid white;
+    padding: 5px 10px;
+    cursor: pointer;
+    flex: 1;
+    margin: 0;
+    box-sizing: border-box;
+}
+
+button:hover {
+    background-color: white;
+    color: black;
+}
+
+#chat-id-field {
+    position: fixed;
+    bottom: 10px;
+    right: 10px;
+}
+
+#chat-id-field label {
+    display: block;
+    margin-bottom: 5px;
+}
+
+#chat-id-field input {
+    width: 95%;
+    margin-bottom: 10px;
+}
+
+#camera-menu, #change-camera-menu {
+    display: none;
+    position: absolute;
+    background-color: black;
+    border: 1px solid white;
+    padding: 20px;
+    z-index: 1000;
+}
+
+#camera-menu ul, #change-camera-menu ul {
+    list-style-type: none;
+    padding: 0;
+    margin: 0;
+}
+
+#camera-menu li, #change-camera-menu li {
+    margin: 10px 0;
+    cursor: pointer;
+    color: white;
+}
+
+#camera-menu li:hover, #change-camera-menu li:hover {
+    color: lightgray;
+}
+
+#notification {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    z-index: 1000;
+}
+
+.notification {
+    background-color: red;
+    color: white;
+    padding: 10px;
+    margin: 5px;
+    border-radius: 5px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.5);
+}
+
+#alert-container {
+    position: relative;
+    margin: 10px 0;
+    text-align: center;
+    width: 100%;
+}
+
+.alert {
+    display: inline-block;
+    padding: 5px 10px;
+    margin: 5px;
+    background-color: rgba(255, 0, 0, 0.9);
+    color: white;
+    border-radius: 5px;
+    font-size: 0.9em;
+}

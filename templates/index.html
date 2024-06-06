@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Action Recognition</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="{{ url_for('static', filename='script.js') }}" defer></script>
+</head>
+<body>
+    <h1>Action Recognition System</h1>
+    <div id="alert-container"></div>
+    <button id="add-camera-button" onclick="showCameraMenu()">Add Camera</button>
+    <div id="cameras">
+        {% for camera in cameras %}
+            <div class="camera">
+                <h2 contenteditable="true" data-camera-id="{{ camera.id }}" onblur="updateCameraName(this)">{{ camera.name }}</h2>
+                <img src="{{ url_for('video_feed', camera_id=camera.id) }}">
+                <div class="button-container">
+                    <form method="post" action="/remove_camera" onsubmit="return removeCamera(this)" style="display:inline;">
+                        <input type="hidden" name="camera_id" value="{{ camera.id }}">
+                        <button type="submit">Remove Camera</button>
+                    </form>
+                    <button onclick="showChangeCameraMenu({{ camera.id }}, this, '{{ camera.name }}')">Change Camera</button>
+                </div>
+            </div>
+        {% endfor %}
+    </div>
+    <div id="camera-menu">
+        <ul>
+            {% for camera in available_cameras %}
+                <li onclick="addCamera({{ camera.id }}, '{{ camera.name }}')">{{ camera.name }}</li>
+            {% endfor %}
+        </ul>
+        <button onclick="hideCameraMenu()">Close</button>
+    </div>
+    <div id="change-camera-menu">
+        <ul>
+            {% for camera in available_cameras %}
+                <li onclick="changeCamera({{ camera.id }}, '{{ camera.name }}')">{{ camera.name }}</li>
+            {% endfor %}
+        </ul>
+        <input type="hidden" id="current-camera-id" value="">
+        <input type="hidden" id="current-camera-name" value="">
+        <button onclick="hideChangeCameraMenu()">Close</button>
+    </div>
+    <div id="chat-id-field">
+        <form method="post" action="/set_telegram_chat_id" onsubmit="setTelegramChatId(event)">
+            <label for="chat_id">Notification Chat ID:</label>
+            <input type="text" id="chat_id" name="chat_id" required>
+            <button type="submit">Set Chat ID</button>
+        </form>
+    </div>
+
+    <div id="notification"></div>
+    <script>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    alert("{{ message }}");
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+    </script>
+</body>
+</html>
