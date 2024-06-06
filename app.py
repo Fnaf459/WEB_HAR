@@ -36,9 +36,13 @@ dangerous_actions = dangerous_df['action'].tolist()
 
 logging.basicConfig(level=logging.DEBUG)
 
+# Определение устройства (CPU или GPU)
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+logging.debug(f'Using device: {device}')
+
 # Загрузка предобученной модели SlowFast
 model = slowfast_r50(pretrained=True)
-model = model.eval()
+model = model.to(device).eval()
 
 # Определение трансформации для входных кадров
 transform = transforms.Compose([
@@ -48,16 +52,16 @@ transform = transforms.Compose([
     transforms.Normalize(mean=[0.45, 0.45, 0.45], std=[0.225, 0.225, 0.225]),
 ])
 
-# Инициализация детектора людей MediaPipe
+# Инициализация детектора людей MediaPipe с использованием GPU
 mp_pose = mp.solutions.pose
-pose = mp_pose.Pose()
+pose = mp_pose.Pose(model_complexity=1, static_image_mode=False, min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
 # Функция для подготовки slow и fast путей
 def prepare_inputs(frames):
     slow_pathway = [transform(Image.fromarray(frame)) for frame in frames[::4]]  # slow pathway (берем каждый 4-й кадр)
     fast_pathway = [transform(Image.fromarray(frame)) for frame in frames]  # fast pathway (берем все кадры)
-    return [torch.stack(slow_pathway).permute(1, 0, 2, 3).unsqueeze(0),
-            torch.stack(fast_pathway).permute(1, 0, 2, 3).unsqueeze(0)]
+    return [torch.stack(slow_pathway).permute(1, 0, 2, 3).unsqueeze(0).to(device),
+            torch.stack(fast_pathway).permute(1, 0, 2, 3).unsqueeze(0).to(device)]
 
 # Функция для классификации действий с использованием модели
 def classify_action(frames):
