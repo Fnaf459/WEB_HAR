@@ -1,12 +1,8 @@
 from flask import request, render_template, jsonify, Response, flash, get_flashed_messages
-from camera import get_available_cameras, generate_frames
+from camera import get_available_cameras
 from notifications import send_telegram_notification
-from telegram import Bot
 import logging
 import config
-
-bot = Bot(token='7421576384:AAHYvYAOhyX01Taw23eckJJkVPsd6QHIe6Q')
-
 
 def register_routes(app):
     @app.route('/')

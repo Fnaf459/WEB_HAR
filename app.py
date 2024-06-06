@@ -19,11 +19,11 @@ lock = Lock()
 dangerous_actions_detected = []
 
 mp_pose = mp.solutions.pose
-pose = mp_pose.Pose()
 
 actions = ["standing", "walking", "running", "jumping", "sitting", "lying", "punching"]
-dangerous_actions = ["running", "jumping", "punching", "unknown"]
+dangerous_actions = ["running", "jumping", "punching", "standing"]
 
+# Загрузка модели
 MODEL_URL = "https://example.com/path/to/your/model.tflite"
 MODEL_PATH = "path/to/model/model.tflite"
 
@@ -94,6 +94,7 @@ def video_feed(camera_id):
 
 def generate_frames_with_notification(camera_id, camera_name):
     cap = cv2.VideoCapture(camera_id)
+    pose = mp_pose.Pose()
     prev_time = 0
     while True:
         success, frame = cap.read()
@@ -112,16 +113,15 @@ def generate_frames_with_notification(camera_id, camera_name):
         if results.pose_landmarks:
             landmarks = results.pose_landmarks.landmark
             action = classify_pose(landmarks)
+            color = (0, 255, 0) if action not in dangerous_actions else (0, 0, 255)
+            confidence = 0.95 if action in dangerous_actions else 0.9
+
             if action in dangerous_actions:
-                confidence = 0.95  # Пример, реальная оценка зависит от модели
-                color = (0, 0, 255)
                 notifications.send_telegram_notification(action, camera_name)
                 cv2.putText(frame, f"Dangerous action detected: {action}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 1, cv2.LINE_AA)
                 with lock:
                     dangerous_actions_detected.append({'action': action, 'camera_name': camera_name})
             else:
-                confidence = 0.9
-                color = (0, 255, 0)
                 cv2.putText(frame, f"Action: {action}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
 
             for landmark in landmarks:
@@ -135,8 +135,8 @@ def generate_frames_with_notification(camera_id, camera_name):
             max_y = int(max(landmark.y for landmark in landmarks) * frame.shape[0])
             cv2.rectangle(frame, (min_x, min_y), (max_x, max_y), color, 2)
 
-        cv2.putText(frame, f"FPS: {fps}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(frame, f"Confidence: {confidence:.2f}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"FPS: {fps}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"Confidence: {confidence:.2f}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
 
         ret, buffer = cv2.imencode('.jpg', frame)
         frame = buffer.tobytes()
@@ -153,62 +153,13 @@ def get_dangerous_actions():
 def start_camera_processing(camera):
     camera_id = camera['id']
     camera_name = camera['name']
-    cap = cv2.VideoCapture(camera_id)
-    prev_time = 0
-    while True:
-        success, frame = cap.read()
-        if not success:
-            break
-
-        curr_time = time.time()
-        fps = int(1 / (curr_time - prev_time))
-        prev_time = curr_time
-
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = pose.process(frame_rgb)
-        action = "unknown"
-        confidence = 0.0
-
-        if results.pose_landmarks:
-            landmarks = results.pose_landmarks.landmark
-            action = classify_pose(landmarks)
-            if action in dangerous_actions:
-                confidence = 0.95  # Пример, реальная оценка зависит от модели
-                color = (0, 0, 255)
-                notifications.send_telegram_notification(action, camera_name)
-                cv2.putText(frame, f"Dangerous action detected: {action}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 1, cv2.LINE_AA)
-                with lock:
-                    dangerous_actions_detected.append({'action': action, 'camera_name': camera_name})
-            else:
-                confidence = 0.9
-                color = (0, 255, 0)
-                cv2.putText(frame, f"Action: {action}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
-
-            for landmark in landmarks:
-                x = int(landmark.x * frame.shape[1])
-                y = int(landmark.y * frame.shape[0])
-                cv2.circle(frame, (x, y), 5, color, -1)
-
-            min_x = int(min(landmark.x for landmark in landmarks) * frame.shape[1])
-            max_x = int(max(landmark.x for landmark in landmarks) * frame.shape[1])
-            min_y = int(min(landmark.y for landmark in landmarks) * frame.shape[0])
-            max_y = int(max(landmark.y for landmark in landmarks) * frame.shape[0])
-            cv2.rectangle(frame, (min_x, min_y), (max_x, max_y), color, 2)
-
-        cv2.putText(frame, f"FPS: {fps}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(frame, f"Confidence: {confidence:.2f}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-
-        ret, buffer = cv2.imencode('.jpg', frame)
-        frame = buffer.tobytes()
-        with lock:
-            # Сохранение последнего кадра для данной камеры
-            camera['frame'] = frame
+    thread = Thread(target=video_feed, args=(camera_id,))
+    thread.daemon = True
+    thread.start()
 
 def initialize_cameras():
     for camera in cameras:
-        thread = Thread(target=start_camera_processing, args=(camera,))
-        thread.daemon = True
-        thread.start()
+        start_camera_processing(camera)
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
