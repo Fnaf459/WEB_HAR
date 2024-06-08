@@ -1,14 +1,23 @@
-from flask import Flask, Response, jsonify
+import logging
+import time
+from threading import Thread, Lock
+
 import cv2
 import mediapipe as mp
 import numpy as np
-import os
-import requests
-import time
-from routes import register_routes
-from threading import Thread, Lock
-import logging
+import pandas as pd
+import pycuda.autoinit
+import pycuda.driver as cuda
+import tensorrt as trt
+import torch
+import torch.nn.functional as F
+import torchvision.transforms as transforms
+from PIL import Image
+from flask import Flask, Response, jsonify
+from torchvision.models.video import r2plus1d_18
+
 import notifications
+from routes import register_routes
 
 app = Flask(__name__)
 app.secret_key = 'supersecretkey'
@@ -18,130 +27,234 @@ cameras = []
 lock = Lock()
 dangerous_actions_detected = []
 
-mp_pose = mp.solutions.pose
+# Path to the file with class labels
+csv_file_path = './data/kinetics_400_labels.csv'
 
-actions = ["standing", "walking", "running", "jumping", "sitting", "lying", "punching"]
-dangerous_actions = ["running", "jumping", "punching", "standing"]
+# Read class labels from the .csv file
+df = pd.read_csv(csv_file_path)
+actions = df['action'].tolist()
 
-# Загрузка модели
-MODEL_URL = "https://example.com/path/to/your/model.tflite"
-MODEL_PATH = "path/to/model/model.tflite"
-
-if not os.path.exists(MODEL_PATH):
-    os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
-    response = requests.get(MODEL_URL)
-    with open(MODEL_PATH, 'wb') as f:
-        f.write(response.content)
+# Load the list of dangerous actions from a separate .csv file
+dangerous_csv_file_path = './data/dangerous_actions.csv'
+dangerous_df = pd.read_csv(dangerous_csv_file_path)
+dangerous_actions = dangerous_df['action'].tolist()
 
 logging.basicConfig(level=logging.DEBUG)
 
-def classify_pose(landmarks):
-    left_hip = landmarks[mp_pose.PoseLandmark.LEFT_HIP.value]
-    right_hip = landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value]
-    left_knee = landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value]
-    right_knee = landmarks[mp_pose.PoseLandmark.RIGHT_KNEE.value]
-    left_ankle = landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value]
-    right_ankle = landmarks[mp_pose.PoseLandmark.RIGHT_ANKLE.value]
-    left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value]
-    right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
-    left_elbow = landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value]
-    right_elbow = landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW.value]
-    left_wrist = landmarks[mp_pose.PoseLandmark.LEFT_WRIST.value]
-    right_wrist = landmarks[mp_pose.PoseLandmark.RIGHT_WRIST.value]
+# Define the device (CPU or GPU)
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+logging.debug(f'Using device: {device}')
 
-    if (left_hip.visibility < 0.5 or right_hip.visibility < 0.5 or
-        left_knee.visibility < 0.5 or right_knee.visibility < 0.5 or
-        left_ankle.visibility < 0.5 or right_ankle.visibility < 0.5 or
-        left_shoulder.visibility < 0.5 or right_shoulder.visibility < 0.5):
-        return "unknown"
 
-    def calculate_angle(a, b, c):
-        angle = np.arctan2(c.y - b.y, c.x - b.x) - np.arctan2(a.y - b.y, a.x - b.x)
-        return np.abs(angle * 180.0 / np.pi)
+# Load the pre-trained R(2+1)D model and export it to ONNX
+class R2Plus1DWrapper(torch.nn.Module):
+    def __init__(self, model):
+        super(R2Plus1DWrapper, self).__init__()
+        self.model = model
 
-    left_leg_angle = calculate_angle(left_hip, left_knee, left_ankle)
-    right_leg_angle = calculate_angle(right_hip, right_knee, right_ankle)
-    left_arm_angle = calculate_angle(left_shoulder, left_elbow, left_wrist)
-    right_arm_angle = calculate_angle(right_shoulder, right_elbow, right_wrist)
+    def forward(self, x):
+        x = x.to(device)
+        return self.model(x)
 
-    if left_leg_angle > 160 and right_leg_angle > 160:
-        return "standing"
 
-    if (left_leg_angle > 150 and right_leg_angle < 160) or (right_leg_angle > 150 and left_leg_angle < 160):
-        return "walking"
+model = r2plus1d_18(pretrained=True).to(device)
+wrapped_model = R2Plus1DWrapper(model).eval()
 
-    if (left_leg_angle < 140 and right_leg_angle < 140) and (left_ankle.y < left_hip.y or right_ankle.y < right_hip.y):
-        return "running"
+# Export the model to ONNX format
+onnx_model_path = "r2plus1d_18.onnx"
+dummy_input = torch.randn(1, 3, 8, 224, 224).to(device)  # R(2+1)D takes a single input
+torch.onnx.export(wrapped_model, dummy_input, onnx_model_path, opset_version=11)
 
-    if (left_ankle.y < left_hip.y and right_ankle.y < right_hip.y) and (left_leg_angle < 160 or right_leg_angle < 160):
-        return "jumping"
+# Function to build the TensorRT engine
+def build_engine(onnx_file_path, engine_file_path="r2plus1d_18.trt"):
+    TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+    builder = trt.Builder(TRT_LOGGER)
+    network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+    config = builder.create_builder_config()
+    parser = trt.OnnxParser(network, TRT_LOGGER)
 
-    if (left_leg_angle < 100 and right_leg_angle < 100) and (left_hip.y > left_knee.y and right_hip.y > right_knee.y):
-        return "sitting"
+    with open(onnx_file_path, 'rb') as model:
+        if not parser.parse(model.read()):
+            for error in range(parser.num_errors()):
+                print(parser.get_error(error))
+            return None
 
-    if left_hip.y > left_shoulder.y and right_hip.y > right_shoulder.y:
-        return "lying"
+    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)  # 1GB
+    config.set_flag(trt.BuilderFlag.FP16)
 
-    if ((left_arm_angle < 45 or right_arm_angle < 45) and (left_arm_angle > 120 or right_arm_angle > 120)):
-        return "punching"
+    serialized_engine = builder.build_serialized_network(network, config)
+    with open(engine_file_path, "wb") as f:
+        f.write(serialized_engine)
 
-    return "unknown"
+    runtime = trt.Runtime(TRT_LOGGER)
+    engine = runtime.deserialize_cuda_engine(serialized_engine)
+    return engine
+
+
+# Optimize the model
+trt_engine_path = "r2plus1d_18.trt"
+engine = build_engine(onnx_model_path, trt_engine_path)
+
+# Load the optimized TensorRT model
+TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+with open(trt_engine_path, "rb") as f, trt.Runtime(TRT_LOGGER) as runtime:
+    engine = runtime.deserialize_cuda_engine(f.read())
+context = engine.create_execution_context()
+
+# Define the transformation for input frames
+transform = transforms.Compose([
+    transforms.Resize((256, 256)),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.45, 0.45, 0.45], std=[0.225, 0.225, 0.225]),
+])
+
+# Initialize the MediaPipe human detector with GPU support
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(model_complexity=1, static_image_mode=False, min_detection_confidence=0.5,
+                    min_tracking_confidence=0.5)
+
+
+# Function to prepare input
+def prepare_inputs(frames):
+    transformed_frames = [transform(Image.fromarray(frame)) for frame in frames]
+    return torch.stack(transformed_frames).unsqueeze(0).to(device)
+
+
+def allocate_buffers(engine, context):
+    inputs = []
+    outputs = []
+    bindings = []
+    stream = cuda.Stream()
+
+    for i in range(engine.num_io_tensors):
+        tensor_name = engine.get_tensor_name(i)
+        size = trt.volume(context.get_tensor_shape(tensor_name))
+        dtype = trt.nptype(engine.get_tensor_dtype(tensor_name))
+        host_mem = cuda.pagelocked_empty(size, dtype)
+        device_mem = cuda.mem_alloc(host_mem.nbytes)
+        bindings.append(int(device_mem))
+        if engine.get_tensor_mode(tensor_name) == trt.TensorIOMode.INPUT:
+            inputs.append({"host": host_mem, "device": device_mem})
+        else:
+            outputs.append({"host": host_mem, "device": device_mem})
+    return inputs, outputs, bindings, stream
+
+
+def do_inference(context, bindings, inputs, outputs, stream):
+    # Переносим данные входа на GPU
+    [cuda.memcpy_htod_async(inp["device"], inp["host"], stream) for inp in inputs]
+
+    # Запуск инференса
+    context.execute_v2(bindings=bindings)  # Передаем только bindings без stream_handle
+
+    # Переносим результаты обратно с GPU
+    [cuda.memcpy_dtoh_async(out["host"], out["device"], stream) for out in outputs]
+
+    # Ожидание завершения работы GPU
+    stream.synchronize()
+
+    return [out["host"] for out in outputs]
+
+
+# Prepare buffers
+inputs, outputs, bindings, stream = allocate_buffers(engine, context)
+
+
+def classify_action(frames):
+    inputs_data = prepare_inputs(frames)
+    np.copyto(inputs[0]["host"], inputs_data.cpu().numpy().ravel())
+
+    outputs_data = do_inference(context, bindings=bindings, inputs=inputs, outputs=outputs, stream=stream)
+
+    probabilities = torch.tensor(outputs_data[0]).reshape(1, -1)
+    probabilities = F.softmax(probabilities, dim=1)
+    max_prob, predicted = torch.max(probabilities, 1)
+    predicted_index = predicted.item()
+    confidence = max_prob.item()
+
+    if 0 <= predicted_index < len(actions):
+        action = actions[predicted_index]
+    else:
+        action = "unknown"
+
+    return action, confidence
+
 
 @app.route('/video_feed/<int:camera_id>')
 def video_feed(camera_id):
     camera_name = next((cam['name'] for cam in cameras if cam['id'] == camera_id), f"Camera {camera_id}")
-    return Response(generate_frames_with_notification(camera_id, camera_name), mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(generate_frames_with_notification(camera_id, camera_name),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
+
 
 def generate_frames_with_notification(camera_id, camera_name):
     cap = cv2.VideoCapture(camera_id)
-    pose = mp_pose.Pose()
+    if not cap.isOpened():
+        logging.error(f"Could not open video device {camera_id}")
+        return
+
     prev_time = 0
+    frames = []
     while True:
         success, frame = cap.read()
         if not success:
+            logging.error(f"Failed to capture image from camera {camera_id}")
             break
 
         curr_time = time.time()
         fps = int(1 / (curr_time - prev_time))
         prev_time = curr_time
 
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = pose.process(frame_rgb)
-        action = "unknown"
-        confidence = 0.0
+        # Collect frames for action recognition
+        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        if len(frames) < 8:  # R(2+1)D requires at least 8 frames
+            continue
+        elif len(frames) > 8:
+            frames.pop(0)
 
-        if results.pose_landmarks:
-            landmarks = results.pose_landmarks.landmark
-            action = classify_pose(landmarks)
+        # Process actions every second (or every 8 frames)
+        if len(frames) == 8 and fps >= 1:
+            action, confidence = classify_action(frames)
+
             color = (0, 255, 0) if action not in dangerous_actions else (0, 0, 255)
-            confidence = 0.95 if action in dangerous_actions else 0.9
-
             if action in dangerous_actions:
                 notifications.send_telegram_notification(action, camera_name)
-                cv2.putText(frame, f"Dangerous action detected: {action}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 1, cv2.LINE_AA)
                 with lock:
                     dangerous_actions_detected.append({'action': action, 'camera_name': camera_name})
-            else:
-                cv2.putText(frame, f"Action: {action}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
 
-            for landmark in landmarks:
-                x = int(landmark.x * frame.shape[1])
-                y = int(landmark.y * frame.shape[0])
-                cv2.circle(frame, (x, y), 5, color, -1)
+            # Detect humans and draw bounding boxes using MediaPipe
+            results = pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            if results.pose_landmarks:
+                bbox = calculate_bounding_box(results.pose_landmarks.landmark, frame.shape)
+                cv2.rectangle(frame, bbox[0], bbox[1], color, 2)
 
-            min_x = int(min(landmark.x for landmark in landmarks) * frame.shape[1])
-            max_x = int(max(landmark.x for landmark in landmarks) * frame.shape[1])
-            min_y = int(min(landmark.y for landmark in landmarks) * frame.shape[0])
-            max_y = int(max(landmark.y for landmark in landmarks) * frame.shape[0])
-            cv2.rectangle(frame, (min_x, min_y), (max_x, max_y), color, 2)
+            cv2.putText(frame,
+                        f"Dangerous action detected: {action}" if action in dangerous_actions else f"Action: {action}",
+                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.75 if action in dangerous_actions else 0.5, color, 1,
+                        cv2.LINE_AA)
 
-        cv2.putText(frame, f"FPS: {fps}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
-        cv2.putText(frame, f"Confidence: {confidence:.2f}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+            cv2.putText(frame, f'FPS: {fps}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 1, cv2.LINE_AA)
+            cv2.putText(frame, f"Confidence: {confidence:.2f}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
 
         ret, buffer = cv2.imencode('.jpg', frame)
+        if not ret:
+            logging.error("Failed to encode frame")
+            continue
         frame = buffer.tobytes()
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+
+    cap.release()
+    logging.info(f"Released camera {camera_id}")
+
+
+def calculate_bounding_box(landmarks, image_shape):
+    image_height, image_width, _ = image_shape
+    x_coords = [landmark.x * image_width for landmark in landmarks]
+    y_coords = [landmark.y * image_height for landmark in landmarks]
+    return ((int(min(x_coords)), int(min(y_coords))), (int(max(x_coords)), int(max(y_coords))))
+
 
 @app.route('/get_dangerous_actions')
 def get_dangerous_actions():
@@ -150,6 +263,7 @@ def get_dangerous_actions():
         dangerous_actions_detected.clear()
     return jsonify(actions)
 
+
 def start_camera_processing(camera):
     camera_id = camera['id']
     camera_name = camera['name']
@@ -157,9 +271,11 @@ def start_camera_processing(camera):
     thread.daemon = True
     thread.start()
 
+
 def initialize_cameras():
     for camera in cameras:
         start_camera_processing(camera)
+
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
