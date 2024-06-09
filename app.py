@@ -14,7 +14,7 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 from PIL import Image
 from flask import Flask, Response, jsonify
-from torchvision.models.video import r2plus1d_18
+from torchvision.models.video import r3d_18
 
 import notifications
 from routes import register_routes
@@ -45,28 +45,26 @@ logging.basicConfig(level=logging.DEBUG)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 logging.debug(f'Using device: {device}')
 
-
-# Load the pre-trained R(2+1)D model and export it to ONNX
-class R2Plus1DWrapper(torch.nn.Module):
+# Load the pre-trained R3D-18 model and export it to ONNX
+class R3DWrapper(torch.nn.Module):
     def __init__(self, model):
-        super(R2Plus1DWrapper, self).__init__()
+        super(R3DWrapper, self).__init__()
         self.model = model
 
     def forward(self, x):
         x = x.to(device)
         return self.model(x)
 
-
-model = r2plus1d_18(pretrained=True).to(device)
-wrapped_model = R2Plus1DWrapper(model).eval()
+model = r3d_18(pretrained=True)
+wrapped_model = R3DWrapper(model).to(device).eval()
 
 # Export the model to ONNX format
-onnx_model_path = "r2plus1d_18.onnx"
-dummy_input = torch.randn(1, 3, 8, 224, 224).to(device)  # R(2+1)D takes a single input
+onnx_model_path = "r3d_18.onnx"
+dummy_input = torch.randn(1, 3, 8, 224, 224).to(device)  # R3D-18 takes a single input of 8 frames
 torch.onnx.export(wrapped_model, dummy_input, onnx_model_path, opset_version=11)
 
 # Function to build the TensorRT engine
-def build_engine(onnx_file_path, engine_file_path="r2plus1d_18.trt"):
+def build_engine(onnx_file_path, engine_file_path="r3d_18.trt"):
     TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
     builder = trt.Builder(TRT_LOGGER)
     network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
@@ -90,9 +88,8 @@ def build_engine(onnx_file_path, engine_file_path="r2plus1d_18.trt"):
     engine = runtime.deserialize_cuda_engine(serialized_engine)
     return engine
 
-
 # Optimize the model
-trt_engine_path = "r2plus1d_18.trt"
+trt_engine_path = "r3d_18.trt"
 engine = build_engine(onnx_model_path, trt_engine_path)
 
 # Load the optimized TensorRT model
@@ -106,7 +103,7 @@ transform = transforms.Compose([
     transforms.Resize((256, 256)),
     transforms.CenterCrop(224),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.45, 0.45, 0.45], std=[0.225, 0.225, 0.225]),
+    transforms.Normalize(mean=[0.43216, 0.394666, 0.37645], std=[0.22803, 0.22145, 0.216989]),
 ])
 
 # Initialize the MediaPipe human detector with GPU support
@@ -114,12 +111,10 @@ mp_pose = mp.solutions.pose
 pose = mp_pose.Pose(model_complexity=1, static_image_mode=False, min_detection_confidence=0.5,
                     min_tracking_confidence=0.5)
 
-
 # Function to prepare input
 def prepare_inputs(frames):
     transformed_frames = [transform(Image.fromarray(frame)) for frame in frames]
     return torch.stack(transformed_frames).unsqueeze(0).to(device)
-
 
 def allocate_buffers(engine, context):
     inputs = []
@@ -140,13 +135,12 @@ def allocate_buffers(engine, context):
             outputs.append({"host": host_mem, "device": device_mem})
     return inputs, outputs, bindings, stream
 
-
 def do_inference(context, bindings, inputs, outputs, stream):
     # Переносим данные входа на GPU
     [cuda.memcpy_htod_async(inp["device"], inp["host"], stream) for inp in inputs]
 
     # Запуск инференса
-    context.execute_v2(bindings=bindings)  # Передаем только bindings без stream_handle
+    context.execute_v2(bindings=bindings)
 
     # Переносим результаты обратно с GPU
     [cuda.memcpy_dtoh_async(out["host"], out["device"], stream) for out in outputs]
@@ -156,10 +150,8 @@ def do_inference(context, bindings, inputs, outputs, stream):
 
     return [out["host"] for out in outputs]
 
-
 # Prepare buffers
 inputs, outputs, bindings, stream = allocate_buffers(engine, context)
-
 
 def classify_action(frames):
     inputs_data = prepare_inputs(frames)
@@ -180,13 +172,11 @@ def classify_action(frames):
 
     return action, confidence
 
-
 @app.route('/video_feed/<int:camera_id>')
 def video_feed(camera_id):
     camera_name = next((cam['name'] for cam in cameras if cam['id'] == camera_id), f"Camera {camera_id}")
     return Response(generate_frames_with_notification(camera_id, camera_name),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
-
 
 def generate_frames_with_notification(camera_id, camera_name):
     cap = cv2.VideoCapture(camera_id)
@@ -208,7 +198,7 @@ def generate_frames_with_notification(camera_id, camera_name):
 
         # Collect frames for action recognition
         frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        if len(frames) < 8:  # R(2+1)D requires at least 8 frames
+        if len(frames) < 8:  # R3D-18 requires at least 8 frames
             continue
         elif len(frames) > 8:
             frames.pop(0)
@@ -248,13 +238,11 @@ def generate_frames_with_notification(camera_id, camera_name):
     cap.release()
     logging.info(f"Released camera {camera_id}")
 
-
 def calculate_bounding_box(landmarks, image_shape):
     image_height, image_width, _ = image_shape
     x_coords = [landmark.x * image_width for landmark in landmarks]
     y_coords = [landmark.y * image_height for landmark in landmarks]
     return ((int(min(x_coords)), int(min(y_coords))), (int(max(x_coords)), int(max(y_coords))))
-
 
 @app.route('/get_dangerous_actions')
 def get_dangerous_actions():
@@ -263,7 +251,6 @@ def get_dangerous_actions():
         dangerous_actions_detected.clear()
     return jsonify(actions)
 
-
 def start_camera_processing(camera):
     camera_id = camera['id']
     camera_name = camera['name']
@@ -271,11 +258,9 @@ def start_camera_processing(camera):
     thread.daemon = True
     thread.start()
 
-
 def initialize_cameras():
     for camera in cameras:
         start_camera_processing(camera)
-
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
