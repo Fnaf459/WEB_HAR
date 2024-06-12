@@ -28,7 +28,7 @@ document.addEventListener('DOMContentLoaded', (event) => {
                 });
                 lastAlertTime = now;
             })
-            .catch(error => console.error('Error fetching dangerous actions:', error));
+            .catch(error => console.error('Ошибка при получении опасных действий:', error));
     }
 
     setInterval(fetchDangerousActions, 1000);
@@ -109,9 +109,9 @@ function setTelegramChatId(event) {
         body: new URLSearchParams({ chat_id: chatId })
     }).then(response => {
         if (response.status === 204) {
-            alert('Notification chat ID set');
+            alert('Идентификатор чата для уведомлений установлен');
         } else {
-            alert('Failed to set chat ID');
+            alert('Не удалось установить идентификатор чата');
         }
     });
 }
@@ -126,6 +126,6 @@ function updateCameraName(element) {
         },
         body: JSON.stringify({ current_camera_id: cameraId, new_camera_id: cameraId, new_camera_name: newCameraName }),
     }).then(() => {
-        alert('Camera name updated');
+        alert('Название камеры обновлено');
     });
 }

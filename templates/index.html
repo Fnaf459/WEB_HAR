@@ -7,9 +7,9 @@
     <script src="{{ url_for('static', filename='script.js') }}" defer></script>
 </head>
 <body>
-    <h1>Action Recognition System</h1>
+    <h1>Система распознавания действий</h1>
     <div id="alert-container"></div>
-    <button id="add-camera-button" onclick="showCameraMenu()">Add Camera</button>
+    <button id="add-camera-button" onclick="showCameraMenu()">Добавить камеру</button>
     <div id="cameras">
         {% for camera in cameras %}
             <div class="camera">
@@ -18,9 +18,9 @@
                 <div class="button-container">
                     <form method="post" action="/remove_camera" onsubmit="return removeCamera(this)" style="display:inline;">
                         <input type="hidden" name="camera_id" value="{{ camera.id }}">
-                        <button type="submit">Remove Camera</button>
+                        <button type="submit">Удалить камеру</button>
                     </form>
-                    <button onclick="showChangeCameraMenu({{ camera.id }}, this, '{{ camera.name }}')">Change Camera</button>
+                    <button onclick="showChangeCameraMenu({{ camera.id }}, this, '{{ camera.name }}')">Поменять камеру</button>
                 </div>
             </div>
         {% endfor %}
@@ -31,7 +31,7 @@
                 <li onclick="addCamera({{ camera.id }}, '{{ camera.name }}')">{{ camera.name }}</li>
             {% endfor %}
         </ul>
-        <button onclick="hideCameraMenu()">Close</button>
+        <button onclick="hideCameraMenu()">Закрыть</button>
     </div>
     <div id="change-camera-menu">
         <ul>
@@ -41,13 +41,13 @@
         </ul>
         <input type="hidden" id="current-camera-id" value="">
         <input type="hidden" id="current-camera-name" value="">
-        <button onclick="hideChangeCameraMenu()">Close</button>
+        <button onclick="hideChangeCameraMenu()">Закрыть</button>
     </div>
     <div id="chat-id-field">
         <form method="post" action="/set_telegram_chat_id" onsubmit="setTelegramChatId(event)">
-            <label for="chat_id">Notification Chat ID:</label>
+            <label for="chat_id">Идентификатор чата уведомлений:</label>
             <input type="text" id="chat_id" name="chat_id" required>
-            <button type="submit">Set Chat ID</button>
+            <button type="submit">Установить идентификатор чата</button>
         </form>
     </div>
 
