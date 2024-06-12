@@ -1,0 +1,7 @@
+@startuml classes_WEB-HAR
+set namespaceSeparator none
+class "R3DWrapper" as WEB-HAR.app.R3DWrapper {
+  model
+  forward(x)
+}
+@enduml

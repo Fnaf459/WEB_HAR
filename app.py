@@ -6,15 +6,18 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import pandas as pd
+import chardet
 import pycuda.autoinit
 import pycuda.driver as cuda
 import tensorrt as trt
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as transforms
-from PIL import Image
+from PIL import Image, ImageFont, ImageDraw
 from flask import Flask, Response, jsonify
 from torchvision.models.video import r3d_18
+from torchvision.datasets.kinetics import Kinetics
+from torch.utils.data import DataLoader
 
 import notifications
 from routes import register_routes
@@ -28,15 +31,27 @@ lock = Lock()
 dangerous_actions_detected = []
 
 # Path to the file with class labels
-csv_file_path = './data/kinetics_400_labels.csv'
+csv_file_path = './data/kinetics_400_labels_ru.csv'
+dangerous_csv_file_path = './data/dangerous_actions_ru.csv'
 
-# Read class labels from the .csv file
-df = pd.read_csv(csv_file_path)
+def read_csv_with_fallback(file_path):
+    try:
+        # Detect encoding
+        with open(file_path, 'rb') as f:
+            result = chardet.detect(f.read())
+        encoding = result['encoding']
+        # Try reading with detected encoding
+        return pd.read_csv(file_path, encoding=encoding)
+    except UnicodeDecodeError:
+        # Fallback to a specified encoding
+        return pd.read_csv(file_path, encoding='latin1')
+
+# Read class labels and dangerous actions with encoding fallback
+df = read_csv_with_fallback(csv_file_path)
+dangerous_df = read_csv_with_fallback(dangerous_csv_file_path)
+
+# Get action lists
 actions = df['action'].tolist()
-
-# Load the list of dangerous actions from a separate .csv file
-dangerous_csv_file_path = './data/dangerous_actions.csv'
-dangerous_df = pd.read_csv(dangerous_csv_file_path)
 dangerous_actions = dangerous_df['action'].tolist()
 
 logging.basicConfig(level=logging.DEBUG)
@@ -58,13 +73,85 @@ class R3DWrapper(torch.nn.Module):
 model = r3d_18(pretrained=True)
 wrapped_model = R3DWrapper(model).to(device).eval()
 
+# # Function for fine-tuning the model on Kinetics-400 dataset
+# def fine_tune_model(model, train_loader, val_loader, num_epochs=10, learning_rate=1e-3):
+#     criterion = torch.nn.CrossEntropyLoss()
+#     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+#     model.train()
+#     for epoch in range(num_epochs):
+#         running_loss = 0.0
+#         for i, (inputs, labels) in enumerate(train_loader, 0):
+#             inputs, labels = inputs.to(device), labels.to(device)
+#             optimizer.zero_grad()
+#             outputs = model(inputs)
+#             loss = criterion(outputs, labels)
+#             loss.backward()
+#             optimizer.step()
+#             running_loss += loss.item()
+#             if i % 10 == 9:
+#                 logging.info(f'[Epoch {epoch + 1}, Batch {i + 1}] loss: {running_loss / 10:.3f}')
+#                 running_loss = 0.0
+#         validate_model(model, val_loader)
+#     logging.info('Finished fine-tuning')
+#
+# # Function for validating the model
+# def validate_model(model, val_loader):
+#     model.eval()
+#     correct = 0
+#     total = 0
+#     with torch.no_grad():
+#         for inputs, labels in val_loader:
+#             inputs, labels = inputs.to(device), labels.to(device)
+#             outputs = model(inputs)
+#             _, predicted = torch.max(outputs, 1)
+#             total += labels.size(0)
+#             correct += (predicted == labels).sum().item()
+#     logging.info(f'Accuracy of the network on the validation set: {100 * correct / total:.2f}%')
+#
+# # Load Kinetics-400 dataset
+# def load_kinetics400_data(batch_size=8, num_workers=4):
+#     data_transform = transforms.Compose([
+#         transforms.Resize((128, 171)),
+#         transforms.CenterCrop(112),
+#         transforms.ToTensor(),
+#         transforms.Normalize(mean=[0.43216, 0.394666, 0.37645], std=[0.22803, 0.22145, 0.216989])
+#     ])
+#
+#     train_dataset = Kinetics(
+#         root='./data',
+#         frames_per_clip=16,
+#         num_classes='400',
+#         split='train',
+#         transform=data_transform,
+#         download=True,
+#         num_workers=num_workers
+#     )
+#     val_dataset = Kinetics(
+#         root='./data',
+#         frames_per_clip=16,
+#         num_classes='400',
+#         split='val',
+#         transform=data_transform,
+#         download=True,
+#         num_workers=num_workers
+#     )
+#
+#     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+#     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+#
+#     return train_loader, val_loader
+#
+# # Example of how to use the fine-tuning function
+# train_loader, val_loader = load_kinetics400_data()
+# fine_tune_model(wrapped_model, train_loader, val_loader)
+
 # Export the model to ONNX format
-onnx_model_path = "r3d_18.onnx"
+onnx_model_path = "./models/r3d_18.onnx"
 dummy_input = torch.randn(1, 3, 8, 224, 224).to(device)  # R3D-18 takes a single input of 8 frames
 torch.onnx.export(wrapped_model, dummy_input, onnx_model_path, opset_version=11)
 
 # Function to build the TensorRT engine
-def build_engine(onnx_file_path, engine_file_path="r3d_18.trt"):
+def build_engine(onnx_file_path, engine_file_path="./models/r3d_18.trt"):
     TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
     builder = trt.Builder(TRT_LOGGER)
     network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
@@ -89,7 +176,7 @@ def build_engine(onnx_file_path, engine_file_path="r3d_18.trt"):
     return engine
 
 # Optimize the model
-trt_engine_path = "r3d_18.trt"
+trt_engine_path = "./models/r3d_18.trt"
 engine = build_engine(onnx_model_path, trt_engine_path)
 
 # Load the optimized TensorRT model
@@ -207,7 +294,7 @@ def generate_frames_with_notification(camera_id, camera_name):
         if len(frames) == 8 and fps >= 1:
             action, confidence = classify_action(frames)
 
-            color = (0, 255, 0) if action not in dangerous_actions else (0, 0, 255)
+            color = (0, 255, 0) if action not in dangerous_actions else (255, 0, 0)  # Green for normal, red for dangerous
             if action in dangerous_actions:
                 notifications.send_telegram_notification(action, camera_name)
                 with lock:
@@ -219,13 +306,18 @@ def generate_frames_with_notification(camera_id, camera_name):
                 bbox = calculate_bounding_box(results.pose_landmarks.landmark, frame.shape)
                 cv2.rectangle(frame, bbox[0], bbox[1], color, 2)
 
-            cv2.putText(frame,
-                        f"Dangerous action detected: {action}" if action in dangerous_actions else f"Action: {action}",
-                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.75 if action in dangerous_actions else 0.5, color, 1,
-                        cv2.LINE_AA)
+            # Convert frame to PIL for text drawing with Cyrillic support
+            frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            draw = ImageDraw.Draw(frame_pil)
+            small_font = ImageFont.truetype("arial.ttf", 12)  # Half size font
 
-            cv2.putText(frame, f'FPS: {fps}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 1, cv2.LINE_AA)
-            cv2.putText(frame, f"Confidence: {confidence:.2f}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+            text = f"Опасное действие: {action}" if action in dangerous_actions else f"Действие: {action}"
+            draw.text((10, 60), text, font=small_font, fill=color)
+            draw.text((10, 30), f'FPS: {fps}', font=small_font, fill=(0, 255, 0))
+            draw.text((10, 90), f"Уверенность: {confidence:.2f}", font=small_font, fill=(0, 255, 0))
+
+            # Convert back to OpenCV frame
+            frame = cv2.cvtColor(np.array(frame_pil), cv2.COLOR_RGB2BGR)
 
         ret, buffer = cv2.imencode('.jpg', frame)
         if not ret:
