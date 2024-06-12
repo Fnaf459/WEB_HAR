@@ -73,6 +73,78 @@ class R3DWrapper(torch.nn.Module):
 model = r3d_18(pretrained=True)
 wrapped_model = R3DWrapper(model).to(device).eval()
 
+# # Function for fine-tuning the model on Kinetics-400 dataset
+# def fine_tune_model(model, train_loader, val_loader, num_epochs=10, learning_rate=1e-3):
+#     criterion = torch.nn.CrossEntropyLoss()
+#     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+#     model.train()
+#     for epoch in range(num_epochs):
+#         running_loss = 0.0
+#         for i, (inputs, labels) in enumerate(train_loader, 0):
+#             inputs, labels = inputs.to(device), labels.to(device)
+#             optimizer.zero_grad()
+#             outputs = model(inputs)
+#             loss = criterion(outputs, labels)
+#             loss.backward()
+#             optimizer.step()
+#             running_loss += loss.item()
+#             if i % 10 == 9:
+#                 logging.info(f'[Epoch {epoch + 1}, Batch {i + 1}] loss: {running_loss / 10:.3f}')
+#                 running_loss = 0.0
+#         validate_model(model, val_loader)
+#     logging.info('Finished fine-tuning')
+#
+# # Function for validating the model
+# def validate_model(model, val_loader):
+#     model.eval()
+#     correct = 0
+#     total = 0
+#     with torch.no_grad():
+#         for inputs, labels in val_loader:
+#             inputs, labels = inputs.to(device), labels.to(device)
+#             outputs = model(inputs)
+#             _, predicted = torch.max(outputs, 1)
+#             total += labels.size(0)
+#             correct += (predicted == labels).sum().item()
+#     logging.info(f'Accuracy of the network on the validation set: {100 * correct / total:.2f}%')
+#
+# # Load Kinetics-400 dataset
+# def load_kinetics400_data(batch_size=8, num_workers=4):
+#     data_transform = transforms.Compose([
+#         transforms.Resize((128, 171)),
+#         transforms.CenterCrop(112),
+#         transforms.ToTensor(),
+#         transforms.Normalize(mean=[0.43216, 0.394666, 0.37645], std=[0.22803, 0.22145, 0.216989])
+#     ])
+#
+#     train_dataset = Kinetics(
+#         root='./data',
+#         frames_per_clip=16,
+#         num_classes='400',
+#         split='train',
+#         transform=data_transform,
+#         download=True,
+#         num_workers=num_workers
+#     )
+#     val_dataset = Kinetics(
+#         root='./data',
+#         frames_per_clip=16,
+#         num_classes='400',
+#         split='val',
+#         transform=data_transform,
+#         download=True,
+#         num_workers=num_workers
+#     )
+#
+#     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+#     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+#
+#     return train_loader, val_loader
+#
+# # Example of how to use the fine-tuning function
+# train_loader, val_loader = load_kinetics400_data()
+# fine_tune_model(wrapped_model, train_loader, val_loader)
+
 # Export the model to ONNX format
 onnx_model_path = "./models/r3d_18.onnx"
 dummy_input = torch.randn(1, 3, 8, 224, 224).to(device)  # R3D-18 takes a single input of 8 frames
