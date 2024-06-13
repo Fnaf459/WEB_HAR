@@ -22,45 +22,49 @@ from torch.utils.data import DataLoader
 import notifications
 from routes import register_routes
 
+# Инициализация Flask приложения
 app = Flask(__name__)
 app.secret_key = 'supersecretkey'
 register_routes(app)
 
+# Глобальные переменные для хранения камер и обнаруженных опасных действий
 cameras = []
 lock = Lock()
 dangerous_actions_detected = []
 
-# Path to the file with class labels
+# Путь к файлам с метками классов
 csv_file_path = './data/kinetics_400_labels_ru.csv'
 dangerous_csv_file_path = './data/dangerous_actions_ru.csv'
 
+# Функция для чтения CSV с автоматическим определением кодировки
 def read_csv_with_fallback(file_path):
     try:
-        # Detect encoding
+        # Определение кодировки
         with open(file_path, 'rb') as f:
             result = chardet.detect(f.read())
         encoding = result['encoding']
-        # Try reading with detected encoding
+        # Чтение файла с определенной кодировкой
         return pd.read_csv(file_path, encoding=encoding)
     except UnicodeDecodeError:
-        # Fallback to a specified encoding
+        # Альтернативное чтение с указанной кодировкой
         return pd.read_csv(file_path, encoding='latin1')
 
-# Read class labels and dangerous actions with encoding fallback
+# Чтение меток классов и опасных действий с автоматическим определением кодировки
 df = read_csv_with_fallback(csv_file_path)
 dangerous_df = read_csv_with_fallback(dangerous_csv_file_path)
 
-# Get action lists
+# Получение списка действий
 actions = df['action'].tolist()
 dangerous_actions = dangerous_df['action'].tolist()
 
+# Настройка логирования
 logging.basicConfig(level=logging.DEBUG)
 
-# Define the device (CPU or GPU)
+# Определение устройства (CPU или GPU)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 logging.debug(f'Using device: {device}')
 
-# Load the pre-trained R3D-18 model and export it to ONNX
+# Загрузка предобученной модели R3D-18 и экспорт в формат ONNX
 class R3DWrapper(torch.nn.Module):
     def __init__(self, model):
         super(R3DWrapper, self).__init__()
@@ -70,45 +74,52 @@ class R3DWrapper(torch.nn.Module):
         x = x.to(device)
         return self.model(x)
 
+# Загрузка модели
 model = r3d_18(pretrained=True)
 wrapped_model = R3DWrapper(model).to(device).eval()
 
-# # Function for fine-tuning the model on Kinetics-400 dataset
+# # Функция для тонкой настройки модели на наборе данных Kinetics-400.
+# # Параметры: модель, загрузчики данных для обучения и валидации, количество эпох обучения, скорость обучения.
+# # Основные шаги: определение функции потерь и оптимизатора, цикл обучения с обновлением параметров модели, валидация после каждой эпохи.
 # def fine_tune_model(model, train_loader, val_loader, num_epochs=10, learning_rate=1e-3):
-#     criterion = torch.nn.CrossEntropyLoss()
+#     criterion = torch.nn.CrossEntropyLoss() # Определение функции потерь
 #     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 #     model.train()
 #     for epoch in range(num_epochs):
 #         running_loss = 0.0
-#         for i, (inputs, labels) in enumerate(train_loader, 0):
+#         for i, (inputs, labels) in enumerate(train_loader, 0): # Цикл по батчам данных
 #             inputs, labels = inputs.to(device), labels.to(device)
 #             optimizer.zero_grad()
 #             outputs = model(inputs)
 #             loss = criterion(outputs, labels)
-#             loss.backward()
-#             optimizer.step()
+#             loss.backward() # Обратное распространение ошибки
+#             optimizer.step() # Обновление параметров модели
 #             running_loss += loss.item()
-#             if i % 10 == 9:
+#             if i % 10 == 9: # Печать информации о прогрессе каждые 10 батчей
 #                 logging.info(f'[Epoch {epoch + 1}, Batch {i + 1}] loss: {running_loss / 10:.3f}')
 #                 running_loss = 0.0
 #         validate_model(model, val_loader)
 #     logging.info('Finished fine-tuning')
 #
-# # Function for validating the model
+# # Функция для валидации модели.
+# # Параметры: модель, загрузчик данных для валидации.
+# # Основные шаги: перевод модели в режим оценки, отключение вычисления градиентов, вычисление точности модели на валидационных данных.
 # def validate_model(model, val_loader):
-#     model.eval()
+#     model.eval() # Перевод модели в режим оценки (валидации)
 #     correct = 0
 #     total = 0
-#     with torch.no_grad():
+#     with torch.no_grad(): # Отключение вычисления градиентов для ускорения
 #         for inputs, labels in val_loader:
 #             inputs, labels = inputs.to(device), labels.to(device)
 #             outputs = model(inputs)
-#             _, predicted = torch.max(outputs, 1)
+#             _, predicted = torch.max(outputs, 1) # Определение предсказанных классов
 #             total += labels.size(0)
 #             correct += (predicted == labels).sum().item()
 #     logging.info(f'Accuracy of the network on the validation set: {100 * correct / total:.2f}%')
 #
-# # Load Kinetics-400 dataset
+# # Функция загрузки данных Kinetics-400.
+# # Параметры: размер батча, количество потоков для загрузки данных.
+# # Основные шаги: определение преобразований для данных, загрузка обучающего и валидационного наборов данных, создание загрузчиков данных.
 # def load_kinetics400_data(batch_size=8, num_workers=4):
 #     data_transform = transforms.Compose([
 #         transforms.Resize((128, 171)),
@@ -135,7 +146,7 @@ wrapped_model = R3DWrapper(model).to(device).eval()
 #         download=True,
 #         num_workers=num_workers
 #     )
-#
+# # Создание загрузчиков данных
 #     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
 #     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 #
@@ -145,28 +156,31 @@ wrapped_model = R3DWrapper(model).to(device).eval()
 # train_loader, val_loader = load_kinetics400_data()
 # fine_tune_model(wrapped_model, train_loader, val_loader)
 
-# Export the model to ONNX format
+# Экспорт модели в формат ONNX
 onnx_model_path = "./models/r3d_18.onnx"
-dummy_input = torch.randn(1, 3, 8, 224, 224).to(device)  # R3D-18 takes a single input of 8 frames
+dummy_input = torch.randn(1, 3, 8, 224, 224).to(device)  # R3D-18 принимает на вход 8 кадров
 torch.onnx.export(wrapped_model, dummy_input, onnx_model_path, opset_version=11)
 
-# Function to build the TensorRT engine
+# Функция для создания движка TensorRT из ONNX модели
 def build_engine(onnx_file_path, engine_file_path="./models/r3d_18.trt"):
-    TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
-    builder = trt.Builder(TRT_LOGGER)
+    TRT_LOGGER = trt.Logger(trt.Logger.WARNING) # Создание билдера для компиляции сети
+    builder = trt.Builder(TRT_LOGGER) # Создание сети с явной пакетной размерностью
     network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
     config = builder.create_builder_config()
     parser = trt.OnnxParser(network, TRT_LOGGER)
 
+    # Чтение и парсинг ONNX файла
     with open(onnx_file_path, 'rb') as model:
         if not parser.parse(model.read()):
             for error in range(parser.num_errors()):
                 print(parser.get_error(error))
             return None
 
-    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)  # 1GB
+    # Установка лимита памяти и использование режима FP16 для ускорения
+    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 2 << 30)  # 2GB
     config.set_flag(trt.BuilderFlag.FP16)
 
+    # Компиляция и сериализация сети в движок и сохранение сериализованного движка в файл
     serialized_engine = builder.build_serialized_network(network, config)
     with open(engine_file_path, "wb") as f:
         f.write(serialized_engine)
@@ -175,17 +189,17 @@ def build_engine(onnx_file_path, engine_file_path="./models/r3d_18.trt"):
     engine = runtime.deserialize_cuda_engine(serialized_engine)
     return engine
 
-# Optimize the model
+# Оптимизация модели
 trt_engine_path = "./models/r3d_18.trt"
 engine = build_engine(onnx_model_path, trt_engine_path)
 
-# Load the optimized TensorRT model
+# Загрузка оптимизированного движка TensorRT
 TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
 with open(trt_engine_path, "rb") as f, trt.Runtime(TRT_LOGGER) as runtime:
     engine = runtime.deserialize_cuda_engine(f.read())
 context = engine.create_execution_context()
 
-# Define the transformation for input frames
+# Определение преобразований для входных кадров
 transform = transforms.Compose([
     transforms.Resize((256, 256)),
     transforms.CenterCrop(224),
@@ -193,43 +207,47 @@ transform = transforms.Compose([
     transforms.Normalize(mean=[0.43216, 0.394666, 0.37645], std=[0.22803, 0.22145, 0.216989]),
 ])
 
-# Initialize the MediaPipe human detector with GPU support
+# Инициализация детектора людей с использованием MediaPipe с поддержкой GPU
 mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(model_complexity=1, static_image_mode=False, min_detection_confidence=0.5,
-                    min_tracking_confidence=0.5)
+pose = mp_pose.Pose(model_complexity=1, static_image_mode=False, min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
-# Function to prepare input
+# Функция для подготовки входных данных
 def prepare_inputs(frames):
     transformed_frames = [transform(Image.fromarray(frame)) for frame in frames]
     return torch.stack(transformed_frames).unsqueeze(0).to(device)
 
+# Функция для выделения буферов для входных и выходных данных
 def allocate_buffers(engine, context):
+    # Списки для хранения буферов входных и выходных данных
     inputs = []
     outputs = []
     bindings = []
-    stream = cuda.Stream()
+    stream = cuda.Stream() # Создание потока CUDA для асинхронного выполнения операций
 
     for i in range(engine.num_io_tensors):
         tensor_name = engine.get_tensor_name(i)
-        size = trt.volume(context.get_tensor_shape(tensor_name))
-        dtype = trt.nptype(engine.get_tensor_dtype(tensor_name))
-        host_mem = cuda.pagelocked_empty(size, dtype)
-        device_mem = cuda.mem_alloc(host_mem.nbytes)
+        size = trt.volume(context.get_tensor_shape(tensor_name)) # Вычисляем объем памяти для тензора
+        dtype = trt.nptype(engine.get_tensor_dtype(tensor_name)) # Определяем тип данных тензора
+        host_mem = cuda.pagelocked_empty(size, dtype) # Выделяем память на хосте для тензора
+        device_mem = cuda.mem_alloc(host_mem.nbytes) # Выделяем память на устройстве (GPU) для тензора
         bindings.append(int(device_mem))
+
+        # Определяем, является ли тензор входным или выходным
         if engine.get_tensor_mode(tensor_name) == trt.TensorIOMode.INPUT:
             inputs.append({"host": host_mem, "device": device_mem})
         else:
             outputs.append({"host": host_mem, "device": device_mem})
     return inputs, outputs, bindings, stream
 
+# Функция для выполнения инференса
 def do_inference(context, bindings, inputs, outputs, stream):
-    # Переносим данные входа на GPU
+    # Перенос данных входа на GPU
     [cuda.memcpy_htod_async(inp["device"], inp["host"], stream) for inp in inputs]
 
     # Запуск инференса
     context.execute_v2(bindings=bindings)
 
-    # Переносим результаты обратно с GPU
+    # Перенос результатов обратно с GPU
     [cuda.memcpy_dtoh_async(out["host"], out["device"], stream) for out in outputs]
 
     # Ожидание завершения работы GPU
@@ -237,9 +255,10 @@ def do_inference(context, bindings, inputs, outputs, stream):
 
     return [out["host"] for out in outputs]
 
-# Prepare buffers
+# Подготовка буферов
 inputs, outputs, bindings, stream = allocate_buffers(engine, context)
 
+# Функция для классификации действия по кадрам
 def classify_action(frames):
     inputs_data = prepare_inputs(frames)
     np.copyto(inputs[0]["host"], inputs_data.cpu().numpy().ravel())
@@ -259,12 +278,13 @@ def classify_action(frames):
 
     return action, confidence
 
+# Маршрут для потоковой передачи видео с камеры
 @app.route('/video_feed/<int:camera_id>')
 def video_feed(camera_id):
     camera_name = next((cam['name'] for cam in cameras if cam['id'] == camera_id), f"Camera {camera_id}")
-    return Response(generate_frames_with_notification(camera_id, camera_name),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(generate_frames_with_notification(camera_id, camera_name), mimetype='multipart/x-mixed-replace; boundary=frame')
 
+# Функция для генерации кадров с уведомлением об опасных действиях
 def generate_frames_with_notification(camera_id, camera_name):
     cap = cv2.VideoCapture(camera_id)
     if not cap.isOpened():
@@ -283,41 +303,34 @@ def generate_frames_with_notification(camera_id, camera_name):
         fps = int(1 / (curr_time - prev_time))
         prev_time = curr_time
 
-        # Collect frames for action recognition
         frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        if len(frames) < 8:  # R3D-18 requires at least 8 frames
+        if len(frames) < 8:
             continue
         elif len(frames) > 8:
             frames.pop(0)
 
-        # Process actions every second (or every 8 frames)
         if len(frames) == 8 and fps >= 1:
             action, confidence = classify_action(frames)
-
-            color = (0, 255, 0) if action not in dangerous_actions else (0, 0, 255)  # Green for normal, red for dangerous
+            color = (0, 255, 0) if action not in dangerous_actions else (0, 0, 255)
             text_color = (0, 255, 0) if action not in dangerous_actions else (255, 0, 0)
             if action in dangerous_actions:
                 notifications.send_telegram_notification(action, camera_name)
                 with lock:
                     dangerous_actions_detected.append({'action': action, 'camera_name': camera_name})
 
-            # Detect humans and draw bounding boxes using MediaPipe
             results = pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             if results.pose_landmarks:
                 bbox = calculate_bounding_box(results.pose_landmarks.landmark, frame.shape)
                 cv2.rectangle(frame, bbox[0], bbox[1], color, 2)
 
-            # Convert frame to PIL for text drawing with Cyrillic support
             frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             draw = ImageDraw.Draw(frame_pil)
-            small_font = ImageFont.truetype("arial.ttf", 12)  # Half size font
-
+            small_font = ImageFont.truetype("arial.ttf", 12)
             text = f"Опасное действие: {action}" if action in dangerous_actions else f"Действие: {action}"
             draw.text((10, 60), text, font=small_font, fill=text_color)
             draw.text((10, 30), f'FPS: {fps}', font=small_font, fill=(0, 255, 0))
             draw.text((10, 90), f"Уверенность: {confidence:.2f}", font=small_font, fill=(0, 255, 0))
 
-            # Convert back to OpenCV frame
             frame = cv2.cvtColor(np.array(frame_pil), cv2.COLOR_RGB2BGR)
 
         ret, buffer = cv2.imencode('.jpg', frame)
@@ -331,12 +344,14 @@ def generate_frames_with_notification(camera_id, camera_name):
     cap.release()
     logging.info(f"Released camera {camera_id}")
 
+# Функция для вычисления ограничивающей рамки вокруг человека
 def calculate_bounding_box(landmarks, image_shape):
     image_height, image_width, _ = image_shape
     x_coords = [landmark.x * image_width for landmark in landmarks]
     y_coords = [landmark.y * image_height for landmark in landmarks]
     return ((int(min(x_coords)), int(min(y_coords))), (int(max(x_coords)), int(max(y_coords))))
 
+# Маршрут для получения списка обнаруженных опасных действий
 @app.route('/get_dangerous_actions')
 def get_dangerous_actions():
     with lock:
@@ -344,6 +359,7 @@ def get_dangerous_actions():
         dangerous_actions_detected.clear()
     return jsonify(actions)
 
+# Функция для запуска обработки камеры
 def start_camera_processing(camera):
     camera_id = camera['id']
     camera_name = camera['name']
@@ -351,6 +367,7 @@ def start_camera_processing(camera):
     thread.daemon = True
     thread.start()
 
+# Функция для инициализации камер
 def initialize_cameras():
     for camera in cameras:
         start_camera_processing(camera)
